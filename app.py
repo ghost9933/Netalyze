@@ -1,72 +1,192 @@
-# import libraries
+# Import libraries
 import re
 import streamlit as st
 import pandas as pd
 import janitor
-import streamlit.components.v1 as components
 from zipfile import ZipFile
-from pathlib import Path
 import shutil
+from thefuzz import process
+import plotly.express as px
+import networkx as nx
+from pyvis.network import Network
+from wordcloud import WordCloud, STOPWORDS, ImageColorGenerator
+import numpy as np
+from PIL import Image
+import matplotlib.pyplot as plt
+import nltk
 
-# helper functions
-from helpers import *
+nltk.download("stopwords")
+from nltk.corpus import stopwords
 
 
+# Helper functions
 def get_data(usr_file, data="connections") -> pd.DataFrame:
-
+    """Extracts CSV data from a zip file."""
     if usr_file is None:
-        return
+        return None
 
     with ZipFile(usr_file, "r") as zipObj:
-        # Extract all the contents of zip file in current directory
-        zipObj.extractall("data")
+        zipObj.extractall("/tmp")  # Extract to /tmp for Streamlit Share
 
-    raw_df = pd.read_csv("data/Connections.csv", skiprows=3)
+    raw_df = pd.read_csv("/tmp/Connections.csv", skiprows=3)
 
     if data == "messages":
-        raw_df = pd.read_csv("data/messages.csv")
+        raw_df = pd.read_csv("/tmp/messages.csv")
 
-    # delete the data
-    shutil.rmtree("data", ignore_errors=True)
+    # Delete the extracted data folder
+    shutil.rmtree("/tmp", ignore_errors=True)
 
     return raw_df
 
 
-def main():
-    # streamlit config
-    st.set_page_config(
-        page_title="Linkedin Network Visualizer",
-        page_icon="🕸️",
-        initial_sidebar_state="expanded",
-        layout="wide",
+def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
+    """Cleans the dataframe containing LinkedIn connections data."""
+    if privacy:
+        df.drop(columns=["first_name", "last_name", "email_address"], inplace=True)
+    else:
+        df = (
+            df.clean_names()
+            .dropna(subset=["company", "position"])
+            .concatenate_columns(
+                column_names=["first_name", "last_name"],
+                new_column_name="name",
+                sep=" ",
+            )
+            .drop(columns=["first_name", "last_name"])
+            .transform_column("company", lambda s: s[:35])
+            .to_datetime("connected_on")
+            .filter_string(
+                column_name="company",
+                search_string=r"[Ff]reelance|[Ss]elf-[Ee]mployed|\.|\-",
+                complement=True,
+            )
+        )
+
+    # Fuzzy match for positions
+    replace_fuzzywuzzy_match(df, "position", "Data Scientist")
+    replace_fuzzywuzzy_match(df, "position", "Software Engineer", min_ratio=85)
+
+    return df
+
+
+def replace_fuzzywuzzy_match(df: pd.DataFrame, column: str, query: str, min_ratio: int = 75):
+    """Replaces fuzzy matches in the specified column with the query string."""
+    pos_names = df[column].unique()
+    matches = process.extract(query, pos_names, limit=500)
+    matching_pos_name = [match[0] for match in matches if match[1] >= min_ratio]
+    matches_rows = df[column].isin(matching_pos_name)
+    df.loc[matches_rows, column] = query
+
+
+def agg_sum(df: pd.DataFrame, name: str) -> pd.DataFrame:
+    """Aggregates value counts for companies and positions."""
+    df = df[name].value_counts().reset_index()
+    df.columns = [name, "count"]
+    df = df.sort_values(by="count", ascending=False)
+    return df
+
+
+def plot_bar(df: pd.DataFrame, rows: int, title=""):
+    """Creates a bar plot for the top N entries in the dataframe."""
+    height = 500 if rows <= 25 else 900
+    fig = px.histogram(
+        df.head(rows),
+        x='count',
+        y='company' if 'company' in df else 'position',
+        template="plotly_dark",
+        hover_data={df.columns[1]: False},
     )
+    fig.update_layout(
+        height=height,
+        width=600,
+        margin=dict(pad=5),
+        hovermode="y",
+        yaxis_title="",
+        xaxis_title="",
+        title=title,
+        yaxis=dict(autorange="reversed"),
+    )
+    return fig
+
+
+def plot_timeline(df: pd.DataFrame):
+    """Generates a timeline plot of connections over time."""
+    df = df["connected_on"].value_counts().reset_index()
+    df.rename(columns={"index": "connected_on", "connected_on": "count"}, inplace=True)
+    df = df.sort_values(by="connected_on", ascending=True)
+    fig = px.line(df, x="connected_on", y="count")
+    fig.update_layout(
+        xaxis=dict(
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=1, label="1m", step="month", stepmode="backward"),
+                    dict(count=6, label="6m", step="month", stepmode="backward"),
+                    dict(count=1, label="YTD", step="year", stepmode="todate"),
+                    dict(count=1, label="1y", step="year", stepmode="backward"),
+                    dict(step="all"),
+                ]),
+                bgcolor="black",
+            ),
+            rangeslider=dict(visible=True),
+            type="date",
+        ),
+        xaxis_title="Date",
+    )
+    return fig
+
+
+def plot_wordcloud(chats: pd.DataFrame):
+    """Generates a word cloud from chat messages."""
+    chats_nospam = chats[chats.SUBJECT.isnull()]
+    chats_nospam_nohtml = chats_nospam[~chats_nospam.CONTENT.str.contains("<|>")]
+    messages = chats_nospam_nohtml.dropna(subset=["CONTENT"])["CONTENT"].values
+    corpus = []
+
+    for message in messages:
+        message = re.sub(r"http[s]\S+", "", message)  # Remove URLs
+        message = re.sub("[^a-zA-Z]", " ", message).lower()  # Keep only letters
+        message = re.sub(r"\s+[a-zA-Z]\s+", " ", message)  # Remove singular letters
+        words = [word for word in message.split() if word not in set(stopwords.words("english"))]
+        corpus.append(" ".join(words))
+
+    linkedin_mask = np.array(Image.open("media/linkedin.png"))
+    wordcloud = WordCloud(
+        width=3000,
+        height=3000,
+        background_color="black",
+        stopwords=STOPWORDS,
+        mask=linkedin_mask,
+        contour_color="white",
+        contour_width=2,
+    ).generate(" ".join(corpus))
+
+    plt.figure(figsize=(10, 10))
+    plt.imshow(wordcloud, interpolation="bilinear")
+    plt.axis("off")
+    return plt
+
+
+def main():
+    """Main function to run the Streamlit app."""
+    st.set_page_config(page_title="Linkedin Network Visualizer", page_icon="🕸️", layout="wide")
+    
     st.markdown(
         """
-        <h1 style='text-align: center; color: whtie;'>Linkedin Network Visualizer</h1>
+        <h1 style='text-align: center; color: white;'>Linkedin Network Visualizer</h1>
         <h3 style='text-align: center; color: white;'>The missing feature in LinkedIn</h3>
-
         """,
         unsafe_allow_html=True,
     )
 
-    # center image
-    col1, col2, col3 = st.columns([1, 5, 1])
-    col2.image("media/app/everything.png", use_column_width=True)
-
     st.subheader("First, upload your data 💾")
-    st.caption(
-        """
-    Don't know where to find it?
-    [Click here](https://github.com/benthecoder/linkedin-visualizer/tree/main/data_guide#how-to-get-the-data).
-    """
-    )
-    # upload files
+    st.caption("Don't know where to find it? [Click here](https://github.com/benthecoder/linkedin-visualizer/tree/main/data_guide#how-to-get-the-data).")
+    
+    # Upload files
     usr_file = st.file_uploader("Drop your zip file 👇", type={"zip"})
-
     df_ori = get_data(usr_file)
 
-    # if data not uploaded yet, return None
     if df_ori is None:
+        st.warning("Please upload a zip file containing the data.")
         return
 
     df_clean = clean_df(df_ori)
@@ -77,158 +197,28 @@ def main():
     # Data wrangling
     agg_df_company = agg_sum(df_clean, "company")
     agg_df_position = agg_sum(df_clean, "position")
-
-    this_month_df = df_clean[
-        (df_clean["connected_on"].dt.month == 1)
-        & (df_clean["connected_on"].dt.year == 2022)
-    ]
-
-    # Getting some stats
+    
     total_conn = len(df_ori)
-    top_pos = agg_df_position["position"][0]
-    top_comp = agg_df_company["company"][0]
-    second_comp = agg_df_company["company"][1]
-    top_pos_count = agg_df_position["count"][0]
-    first_c = df_clean.iloc[-1]
-    last_c = df_clean.iloc[0]
+    
+    # Display metrics
+    st.metric("Total Connections", total_conn)
+    
+    # Visualizations
+    st.subheader("Top Companies & Positions")
+    top_n = st.slider("Select Top N", 1, 50, 10)
+    
+    company_plt = plot_bar(agg_df_company, top_n, title="Top Companies")
+    position_plt = plot_bar(agg_df_position, top_n, title="Top Positions")
+    
+    st.plotly_chart(company_plt, use_container_width=True)
+    st.plotly_chart(position_plt, use_container_width=True)
 
-    # calculating stats
-    st.markdown(
-        """
-        ---
-        ### Here's a breakdown of your connections 👇
-        """
-    )
-
-    # Metrics
-    pos, comp, conn = st.columns(3)
-    pos.metric("Top Position", f"{top_pos[0:18]}..." if len(top_pos) > 18 else top_pos)
-    comp.metric(
-        "Top Company", f"{top_comp[0:18]}..." if len(top_comp) > 18 else top_comp
-    )
-    conn.metric("Total Connections", f"{total_conn}", len(this_month_df))
-
-    # Summary
-    st.subheader("Full summary")
-    st.markdown(
-        f"""
-        - You have _{len(this_month_df)}_ new ⭐ connections this month, with a total of _{total_conn}_!
-        - Most of your connections work at **{top_comp}**" (dream company?), closely followed by {second_comp}
-        - You love connecting with people 🤵 with the title – **{top_pos}**, _{top_pos_count}_ of them!
-        - Your first ever connection is {first_c['name']} and they work as a {first_c.position} at {first_c.company}
-        - Your most recent connection is {last_c['name']} and they work as a {last_c.position} at {last_c.company}
-
-        ---
-        """
-    )
-
-    st.caption("Scroll down 🖱️⬇️ to see some cool visualizations!")
-
-    # visualizations
-    st.sidebar.subheader("Bar Charts")
-    top_n = st.sidebar.slider("Top n", 0, 50, 10, key="1")
-
-    # top n companies and positions
-    st.subheader(f"Top {top_n} companies & positions")
-
-    company_plt, positions_plt = st.columns(2)
-    company_plt.plotly_chart(plot_bar(agg_df_company, top_n), use_container_width=True)
-    positions_plt.plotly_chart(
-        plot_bar(agg_df_position, top_n), use_container_width=True
-    )
-
-    col1, col2 = st.columns(2)
-    with col1:
-        with st.expander("View top companies data", expanded=True):
-            st.dataframe(agg_df_company)
-    with col2:
-        with st.expander("View top positions data", expanded=True):
-            st.dataframe(agg_df_position)
-
-    # connections timeline
-    st.subheader("Timeline of connections")
+    st.subheader("Timeline of Connections")
     st.plotly_chart(plot_timeline(df_clean), use_container_width=True)
 
-    st.write("let's look at on what days do you have the most connections")
-    st.plotly_chart(plot_day(df_clean), use_container_width=True)
-
-    # cumulative graph
-    st.subheader("Connections overtime")
-    st.plotly_chart(plot_cumsum(df_clean), use_container_width=True)
-
-    # Graph network
-    st.sidebar.subheader("Connection network")
-    network_num = st.sidebar.slider(
-        "cutoff point for connections (the smaller it is the larger the network)",
-        2,
-        50,
-        6,
-        key="3",
-    )
-
-    log_bool = False
-    if st.sidebar.checkbox("Log scale"):
-        log_bool = True
-
-    st.subheader("Company Network")
-    generate_network(df_clean, agg_df_company, log_bool, network_num)
-
-    st.subheader("Positions Network")
-    generate_network(df_clean, agg_df_position, log_bool, network_num)
-
-    # emails
-    st.write("Now to put your connections to good use")
-    st.subheader("Who can you cold email 📧?")
-
-    emails = df_clean[df_clean.notnull()["email_address"]].drop(
-        ["connected_on", "weekday"], axis=1
-    )
-
-    st.write(f"Answer: {len(emails)} of your connections shared their emails!")
-    st.dataframe(emails)
-
-    st.sidebar.write(
-        "Interested in the code? Head over to the [Github Repo](https://github.com/benthecoder/linkedin-visualizer)"
-    )
-
-    # chats
-    st.markdown("---")
-    st.subheader("Chats analysis")
-    messages = get_data(usr_file, data="messages")
-    messages["DATE"] = pd.to_datetime(messages["DATE"], format="%Y-%m-%d %H:%M:%S UTC")
-    messages["DATE"] = (
-        messages["DATE"].dt.tz_localize("UTC").dt.tz_convert("US/Central")
-    )
-
-    total, from_count, to_count = st.columns(3)
-    total.metric("Total Conversations", f"{messages['CONVERSATION ID'].nunique()}")
-    from_count.metric("Total Sent", f"{messages.FROM.nunique()}")
-    to_count.metric("Total Received", f"{messages.TO.nunique()}")
-
-    messages_FROM = agg_sum(messages, "FROM").iloc[1:]
-    messages_TO = agg_sum(messages, "TO").iloc[1:]
-
-    from_plt, to_plt = st.columns(2)
-    from_plt.plotly_chart(
-        plot_bar(messages_FROM, top_n, title="Messages FROM"), use_column_width=True
-    )
-    to_plt.plotly_chart(
-        plot_bar(messages_TO, top_n, title="Messages TO"), use_column_width=True
-    )
-
-    st.write("what hour of the day do you have the most messages?")
-
-    st.plotly_chart(plot_chat_hour(messages), use_container_width=True)
-
-    st.write(
-        "trend of your messages over time. p.s. hover over the line to see who you talked with"
-    )
-    st.plotly_chart(plot_chat_people(messages), use_container_width=True)
-
-    st.subheader("wordcloud of all chats")
-
-    with st.spinner("Wordcloud generating..."):
-        st.pyplot(plot_wordcloud(messages))
+    st.subheader("Wordcloud of Chats")
+    chats = get_data(usr_file, data="messages")
+    st.pyplot(plot_wordcloud(chats))
 
 
 if __name__ == "__main__":
