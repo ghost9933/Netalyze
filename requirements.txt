@@ -1,6 +1,5 @@
 streamlit
 pandas
-janitor
 thefuzz
 plotly
 networkx
