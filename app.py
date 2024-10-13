@@ -2,7 +2,6 @@
 import re
 import streamlit as st
 import pandas as pd
-import janitor
 from zipfile import ZipFile
 import shutil
 from thefuzz import process
@@ -43,24 +42,25 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     """Cleans the dataframe containing LinkedIn connections data."""
     if privacy:
         df.drop(columns=["first_name", "last_name", "email_address"], inplace=True)
-    else:
-        df = (
-            df.clean_names()
-            .dropna(subset=["company", "position"])
-            .concatenate_columns(
-                column_names=["first_name", "last_name"],
-                new_column_name="name",
-                sep=" ",
-            )
-            .drop(columns=["first_name", "last_name"])
-            .transform_column("company", lambda s: s[:35])
-            .to_datetime("connected_on")
-            .filter_string(
-                column_name="company",
-                search_string=r"[Ff]reelance|[Ss]elf-[Ee]mployed|\.|\-",
-                complement=True,
-            )
-        )
+
+    # Clean column names
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+
+    # Drop missing values in company and position
+    df.dropna(subset=["company", "position"], inplace=True)
+
+    # Combine first name and last name
+    df['name'] = df['first_name'] + ' ' + df['last_name']
+    df.drop(columns=["first_name", "last_name"], inplace=True)
+
+    # Truncate company names
+    df['company'] = df['company'].str[:35]
+
+    # Convert 'connected_on' to datetime
+    df['connected_on'] = pd.to_datetime(df['connected_on'])
+
+    # Filter out unwanted companies
+    df = df[~df['company'].str.contains(r"[Ff]reelance|[Ss]elf-[Ee]mployed|\.|\-", regex=True)]
 
     # Fuzzy match for positions
     replace_fuzzywuzzy_match(df, "position", "Data Scientist")
