@@ -2,19 +2,34 @@
 import re
 import streamlit as st
 import pandas as pd
+import tempfile
 from zipfile import ZipFile
 import shutil
 from thefuzz import process
 import plotly.express as px
+import networkx as nx
+from pyvis.network import Network
 from wordcloud import WordCloud, STOPWORDS
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
 import nltk
+import os
+import base64
 
-nltk.download("stopwords")
+from io import BytesIO
+
+# Download NLTK stopwords if not already downloaded
+nltk.download("stopwords", quiet=True)
 from nltk.corpus import stopwords
 
+# Set Streamlit page configuration
+st.set_page_config(
+    page_title="LinkedIn Network Visualizer",
+    page_icon="🔗",
+    layout="wide",
+    initial_sidebar_state="expanded",
+)
 
 # Helper functions
 def get_data(usr_file, data="connections") -> pd.DataFrame:
@@ -22,49 +37,62 @@ def get_data(usr_file, data="connections") -> pd.DataFrame:
     if usr_file is None:
         return None
 
-    with ZipFile(usr_file, "r") as zipObj:
-        zipObj.extractall("/tmp")  # Extract to /tmp for Streamlit Share
+    with tempfile.TemporaryDirectory() as tmpdirname:
+        try:
+            with ZipFile(usr_file, "r") as zipObj:
+                zipObj.extractall(tmpdirname)
+        except Exception as e:
+            st.error(f"Error extracting ZIP file: {e}")
+            return None
 
-    raw_df = pd.read_csv("/tmp/Connections.csv", skiprows=3)
+        if data == "connections":
+            file_path = os.path.join(tmpdirname, "Connections.csv")
+        elif data == "messages":
+            file_path = os.path.join(tmpdirname, "messages.csv")
+        else:
+            st.error("Invalid data type specified.")
+            return None
 
-    if data == "messages":
-        raw_df = pd.read_csv("/tmp/messages.csv")
+        if not os.path.isfile(file_path):
+            st.error(f"{'Connections' if data == 'connections' else 'Messages'} file not found in the ZIP.")
+            return None
 
-    # Delete the extracted data folder
-    shutil.rmtree("/tmp", ignore_errors=True)
-
-    return raw_df
+        try:
+            df = pd.read_csv(file_path, skiprows=3) if data == "connections" else pd.read_csv(file_path)
+            return df
+        except Exception as e:
+            st.error(f"Error reading CSV file: {e}")
+            return None
 
 
 def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     """Cleans the dataframe containing LinkedIn connections data."""
+    required_columns = ["first_name", "last_name", "email_address", "company", "position", "connected_on"]
+    missing_columns = [col for col in required_columns if col not in df.columns]
+    if missing_columns:
+        st.error(f"Missing columns in data: {', '.join(missing_columns)}")
+        return pd.DataFrame()
+
     if privacy:
-        df.drop(columns=["first_name", "last_name", "email_address"], inplace=True)
+        df = df.drop(columns=["first_name", "last_name", "email_address"], errors='ignore')
 
     # Clean column names
     df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
 
-    # Debug: Print cleaned column names
-    st.write("Debug: Cleaned column names:", df.columns.tolist())
-
     # Drop missing values in company and position
-    df.dropna(subset=["company", "position"], inplace=True)
+    df = df.dropna(subset=["company", "position"])
 
-    # Combine first name and last name
-    df['name'] = df['first_name'] + ' ' + df['last_name']
-    df.drop(columns=["first_name", "last_name"], inplace=True)
+    # Combine first name and last name if present
+    if "first_name" in df.columns and "last_name" in df.columns:
+        df['name'] = df['first_name'].astype(str) + ' ' + df['last_name'].astype(str)
+        df = df.drop(columns=["first_name", "last_name"], errors='ignore')
 
     # Truncate company names
-    df['company'] = df['company'].str[:35]
+    df['company'] = df['company'].astype(str).str[:35]
 
-    # Convert 'connected_on' to datetime with specific format
-    df['connected_on'] = pd.to_datetime(df['connected_on'], format='%d-%b-%y', errors='coerce')
-
-    # Debug: Check if 'connected_on' is properly converted
-    st.write("Debug: Head of DataFrame after date parsing:", df.head())
-
-    # Drop rows with invalid dates if any
-    df.dropna(subset=['connected_on'], inplace=True)
+    # Convert 'connected_on' to datetime
+    df['connected_on'] = pd.to_datetime(df['connected_on'], errors='coerce')
+    df = df.dropna(subset=["connected_on"])
 
     # Filter out unwanted companies
     df = df[~df['company'].str.contains(r"[Ff]reelance|[Ss]elf-[Ee]mployed|\.|\-", regex=True)]
@@ -95,22 +123,19 @@ def agg_sum(df: pd.DataFrame, name: str) -> pd.DataFrame:
 
 def plot_bar(df: pd.DataFrame, rows: int, title=""):
     """Creates a bar plot for the top N entries in the dataframe."""
-    height = 500 if rows <= 25 else 900
-    fig = px.histogram(
+    fig = px.bar(
         df.head(rows),
         x='count',
-        y='company' if 'company' in df else 'position',
+        y=df.columns[0],
+        orientation='h',
         template="plotly_dark",
-        hover_data={df.columns[1]: False},
+        labels={df.columns[0]: title.split(" ")[1], "count": "Count"},
+        title=title
     )
     fig.update_layout(
-        height=height,
+        height=400,
         width=600,
         margin=dict(pad=5),
-        hovermode="y",
-        yaxis_title="",
-        xaxis_title="",
-        title=title,
         yaxis=dict(autorange="reversed"),
     )
     return fig
@@ -118,18 +143,21 @@ def plot_bar(df: pd.DataFrame, rows: int, title=""):
 
 def plot_timeline(df: pd.DataFrame):
     """Generates a timeline plot of connections over time."""
-    # Debug: Check column names in the DataFrame
-    if "connected_on" not in df.columns:
-        raise ValueError(f"Column 'connected_on' not found in DataFrame. Available columns: {df.columns.tolist()}")
+    df_time = df["connected_on"].dt.to_period('M').dt.to_timestamp()
+    timeline_df = df_time.value_counts().reset_index()
+    timeline_df.columns = ["connected_on", "count"]
+    timeline_df = timeline_df.sort_values(by="connected_on")
 
-    # Debug: Print head of DataFrame to verify parsing
-    st.write("Debug: Head of DataFrame", df.head())
-
-    df = df["connected_on"].value_counts().reset_index()
-    df.rename(columns={"index": "connected_on", "connected_on": "count"}, inplace=True)
-    df = df.sort_values(by="connected_on", ascending=True)
-    fig = px.line(df, x="connected_on", y="count")
+    fig = px.line(
+        timeline_df,
+        x="connected_on",
+        y="count",
+        title="Timeline of Connections",
+        template="plotly_dark",
+    )
     fig.update_layout(
+        xaxis_title="Date",
+        yaxis_title="Number of Connections",
         xaxis=dict(
             rangeselector=dict(
                 buttons=list([
@@ -144,95 +172,218 @@ def plot_timeline(df: pd.DataFrame):
             rangeslider=dict(visible=True),
             type="date",
         ),
-        xaxis_title="Date",
     )
     return fig
 
 
 def plot_wordcloud(chats: pd.DataFrame):
     """Generates a word cloud from chat messages."""
-    chats_nospam = chats[chats.SUBJECT.isnull()]
-    chats_nospam_nohtml = chats_nospam[~chats_nospam.CONTENT.str.contains("<|>")]
-    messages = chats_nospam_nohtml.dropna(subset=["CONTENT"])["CONTENT"].values
+    if "SUBJECT" not in chats.columns or "CONTENT" not in chats.columns:
+        st.warning("Messages data does not contain required columns for word cloud.")
+        return None
+
+    chats_nospam = chats[chats["SUBJECT"].isnull()]
+    chats_nospam_nohtml = chats_nospam[~chats_nospam["CONTENT"].str.contains("<|>", na=False)]
+    messages = chats_nospam_nohtml.dropna(subset=["CONTENT"])["CONTENT"].astype(str).values
     corpus = []
 
     for message in messages:
-        message = re.sub(r"http[s]\S+", "", message)  # Remove URLs
+        message = re.sub(r"http[s]?\S+", "", message)  # Remove URLs
         message = re.sub("[^a-zA-Z]", " ", message).lower()  # Keep only letters
-        message = re.sub(r"\s+[a-zA-Z]\s+", " ", message)  # Remove singular letters
+        message = re.sub(r"\s+[a-zA-Z]\s+", " ", message)  # Remove single letters
         words = [word for word in message.split() if word not in set(stopwords.words("english"))]
         corpus.append(" ".join(words))
 
-    linkedin_mask = np.array(Image.open("media/linkedin.png"))
+    combined_text = " ".join(corpus)
+
+    # Generate word cloud
     wordcloud = WordCloud(
-        width=3000,
-        height=3000,
+        width=800,
+        height=400,
         background_color="black",
         stopwords=STOPWORDS,
-        mask=linkedin_mask,
-        contour_color="white",
-        contour_width=2,
-    ).generate(" ".join(corpus))
+        max_words=200,
+        colormap="viridis",
+    ).generate(combined_text)
 
-    plt.figure(figsize=(10, 10))
+    # Plot word cloud
+    plt.figure(figsize=(15, 7.5))
     plt.imshow(wordcloud, interpolation="bilinear")
     plt.axis("off")
+    plt.tight_layout(pad=0)
     return plt
+
+
+def plot_network_graph(df: pd.DataFrame):
+    """Generates an interactive network graph of connections."""
+    G = nx.Graph()
+
+    # Adding nodes
+    for _, row in df.iterrows():
+        G.add_node(row['name'], company=row['company'], position=row['position'])
+
+    # Adding edges (for simplicity, connecting all to a central node, e.g., you)
+    central_node = "You"
+    G.add_node(central_node, company="You", position="Your Position")
+    for node in G.nodes():
+        if node != central_node:
+            G.add_edge(central_node, node)
+
+    # Generate PyVis network
+    net = Network(height='750px', width='100%', bgcolor='#222222', font_color='white')
+    net.from_nx(G)
+
+    # Customize node appearance
+    for node in net.nodes:
+        node['title'] = f"Company: {G.nodes[node['id']]['company']}<br>Position: {G.nodes[node['id']]['position']}"
+        if node['id'] == central_node:
+            node['color'] = 'red'
+            node['size'] = 20
+        else:
+            node['color'] = 'blue'
+            node['size'] = 10
+
+    return net
+
+
+def plot_sankey(df: pd.DataFrame):
+    """Generates a Sankey diagram showing flow between companies and positions."""
+    sankey_df = df.groupby(['company', 'position']).size().reset_index(name='count')
+
+    fig = px.sankey(
+        sankey_df,
+        node=dict(
+            pad=15,
+            thickness=20,
+            line=dict(color="black", width=0.5),
+            label=list(sankey_df['company'].unique()) + list(sankey_df['position'].unique()),
+        ),
+        link=dict(
+            source=sankey_df['company'].astype(str).apply(lambda x: list(sankey_df['company'].unique()).tolist().index(x)),
+            target=sankey_df['position'].astype(str).apply(lambda x: len(sankey_df['company'].unique()) + list(sankey_df['position'].unique()).tolist().index(x)),
+            value=sankey_df['count']
+        ),
+        title="Flow from Companies to Positions",
+        font=dict(size=10),
+    )
+    fig.update_layout(template="plotly_dark")
+    return fig
+
+
+def add_bg_from_local(image_file):
+    """Adds a background image to the Streamlit app."""
+    with open(image_file, "rb") as image_file:
+        encoded_string = base64.b64encode(image_file.read())
+    st.markdown(
+        f"""
+    <style>
+    .stApp {{
+        background-image: url(data:image/{"png"};base64,{encoded_string.decode()});
+        background-size: cover
+    }}
+    </style>
+    """,
+        unsafe_allow_html=True
+    )
 
 
 def main():
     """Main function to run the Streamlit app."""
-    st.set_page_config(page_title="Linkedin Network Visualizer", page_icon="🛨️", layout="wide")
-    
+    # Optional: Add a background image
+    # add_bg_from_local('path_to_background_image.png')  # Uncomment and set the correct path
+
     st.markdown(
         """
-        <h1 style='text-align: center; color: white;'>Linkedin Network Visualizer</h1>
-        <h3 style='text-align: center; color: white;'>The missing feature in LinkedIn</h3>
+        <h1 style='text-align: center; color: white;'>🔗 LinkedIn Network Visualizer</h1>
+        <h3 style='text-align: center; color: white;'>Unlock Insights from Your LinkedIn Connections</h3>
         """,
         unsafe_allow_html=True,
     )
 
-    st.subheader("First, upload your data 💾")
-    st.caption("Don't know where to find it? [Click here](https://github.com/benthecoder/linkedin-visualizer/tree/main/data_guide#how-to-get-the-data).")
-    
+    st.sidebar.header("Upload Your LinkedIn Data")
+    st.sidebar.markdown("Upload a ZIP file containing `Connections.csv` and optionally `messages.csv`.")
+
     # Upload files
-    usr_file = st.file_uploader("Drop your zip file 👇", type={"zip"})
-    df_ori = get_data(usr_file)
+    usr_file = st.sidebar.file_uploader("📁 Upload ZIP File", type={"zip"})
 
-    if df_ori is None:
-        st.warning("Please upload a zip file containing the data.")
-        return
+    if usr_file is not None:
+        df_connections = get_data(usr_file, data="connections")
+        df_messages = get_data(usr_file, data="messages")
 
-    df_clean = clean_df(df_ori)
+        if df_connections.empty:
+            st.error("Connections data is empty or invalid.")
+            return
 
-    with st.expander("Show raw data"):
-        st.dataframe(df_ori)
+        df_clean = clean_df(df_connections)
 
-    # Data wrangling
-    agg_df_company = agg_sum(df_clean, "company")
-    agg_df_position = agg_sum(df_clean, "position")
-    
-    total_conn = len(df_ori)
-    
-    # Display metrics
-    st.metric("Total Connections", total_conn)
-    
-    # Visualizations
-    st.subheader("Top Companies & Positions")
-    top_n = st.slider("Select Top N", 1, 50, 10)
-    
-    company_plt = plot_bar(agg_df_company, top_n, title="Top Companies")
-    position_plt = plot_bar(agg_df_position, top_n, title="Top Positions")
-    
-    st.plotly_chart(company_plt, use_container_width=True)
-    st.plotly_chart(position_plt, use_container_width=True)
+        if df_clean.empty:
+            st.error("Cleaned data is empty. Please check your data and try again.")
+            return
 
-    st.subheader("Timeline of Connections")
-    st.plotly_chart(plot_timeline(df_clean), use_container_width=True)
+        with st.expander("🔍 Show Raw Connections Data"):
+            st.dataframe(df_connections)
 
-    st.subheader("Wordcloud of Chats")
-    chats = get_data(usr_file, data="messages")
-    st.pyplot(plot_wordcloud(chats))
+        if df_messages is not None and not df_messages.empty:
+            with st.expander("💬 Show Raw Messages Data"):
+                st.dataframe(df_messages)
+
+        # Data wrangling
+        agg_df_company = agg_sum(df_clean, "company")
+        agg_df_position = agg_sum(df_clean, "position")
+
+        total_conn = len(df_clean)
+
+        # Display metrics
+        col1, col2 = st.columns(2)
+        col1.metric("Total Connections", total_conn)
+        col2.metric("Top Companies", agg_df_company['company'].iloc[0])
+
+        # Sidebar filters
+        st.sidebar.header("Filters")
+        top_n = st.sidebar.slider("Select Top N", 5, 50, 10)
+
+        # Visualizations
+        st.subheader("📊 Top Companies & Positions")
+        bar_col1, bar_col2 = st.columns(2)
+        with bar_col1:
+            company_plt = plot_bar(agg_df_company, top_n, title="Top Companies")
+            st.plotly_chart(company_plt, use_container_width=True)
+        with bar_col2:
+            position_plt = plot_bar(agg_df_position, top_n, title="Top Positions")
+            st.plotly_chart(position_plt, use_container_width=True)
+
+        st.subheader("⏰ Timeline of Connections")
+        timeline_fig = plot_timeline(df_clean)
+        st.plotly_chart(timeline_fig, use_container_width=True)
+
+        if df_messages is not None and not df_messages.empty:
+            st.subheader("☁️ Word Cloud of Chats")
+            wordcloud_fig = plot_wordcloud(df_messages)
+            if wordcloud_fig:
+                st.pyplot(wordcloud_fig)
+
+        st.subheader("🔗 Network Graph of Connections")
+        network_graph = plot_network_graph(df_clean)
+        network_graph_html = network_graph.generate_html()
+        st.components.v1.html(network_graph_html, height=750, width='100%')
+
+        st.subheader("🔄 Sankey Diagram: Companies to Positions")
+        sankey_fig = plot_sankey(df_clean)
+        st.plotly_chart(sankey_fig, use_container_width=True)
+
+    else:
+        st.info("Please upload a ZIP file containing your LinkedIn data to get started.")
+
+    # Footer
+    st.markdown(
+        """
+        <hr>
+        <p style='text-align: center; color: gray;'>
+            Developed with ❤️ using Streamlit
+        </p>
+        """,
+        unsafe_allow_html=True,
+    )
 
 
 if __name__ == "__main__":
