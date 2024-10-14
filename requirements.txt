@@ -1,11 +1,10 @@
 streamlit
 pandas
-thefuzz
 plotly
 networkx
 pyvis
 wordcloud
 nltk
+thefuzz
 Pillow
-numpy
 matplotlib
