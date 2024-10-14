@@ -38,6 +38,39 @@ def get_data(usr_file, data="connections") -> pd.DataFrame:
     return raw_df
 
 
+# def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
+#     """Cleans the dataframe containing LinkedIn connections data."""
+#     if privacy:
+#         df.drop(columns=["first_name", "last_name", "email_address"], inplace=True)
+
+#     # Clean column names
+#     df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+
+#     # Drop missing values in company and position
+#     df.dropna(subset=["company", "position"], inplace=True)
+
+#     # Combine first name and last name
+#     df['name'] = df['first_name'] + ' ' + df['last_name']
+#     df.drop(columns=["first_name", "last_name"], inplace=True)
+
+#     # Truncate company names
+#     df['company'] = df['company'].str[:35]
+
+#     # Convert 'connected_on' to datetime
+#     # df['connected_on'] = pd.to_datetime(df['connected_on'])
+#     # Modify this line in `clean_df()` function:
+#     df['connected_on'] = pd.to_datetime(df['connected_on'], format='%d-%b-%y', errors='coerce')
+
+
+#     # Filter out unwanted companies
+#     df = df[~df['company'].str.contains(r"[Ff]reelance|[Ss]elf-[Ee]mployed|\.|\-", regex=True)]
+
+#     # Fuzzy match for positions
+#     replace_fuzzywuzzy_match(df, "position", "Data Scientist")
+#     replace_fuzzywuzzy_match(df, "position", "Software Engineer", min_ratio=85)
+
+#     return df
+
 def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     """Cleans the dataframe containing LinkedIn connections data."""
     if privacy:
@@ -45,6 +78,9 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
 
     # Clean column names
     df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+
+    # Debug: Print cleaned column names
+    st.write("Debug: Cleaned column names:", df.columns.tolist())
 
     # Drop missing values in company and position
     df.dropna(subset=["company", "position"], inplace=True)
@@ -56,11 +92,14 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     # Truncate company names
     df['company'] = df['company'].str[:35]
 
-    # Convert 'connected_on' to datetime
-    # df['connected_on'] = pd.to_datetime(df['connected_on'])
-    # Modify this line in `clean_df()` function:
+    # Convert 'connected_on' to datetime with specific format
     df['connected_on'] = pd.to_datetime(df['connected_on'], format='%d-%b-%y', errors='coerce')
 
+    # Debug: Check if 'connected_on' is properly converted
+    st.write("Debug: Head of DataFrame after date parsing:", df.head())
+
+    # Drop rows with invalid dates if any
+    df.dropna(subset=['connected_on'], inplace=True)
 
     # Filter out unwanted companies
     df = df[~df['company'].str.contains(r"[Ff]reelance|[Ss]elf-[Ee]mployed|\.|\-", regex=True)]
@@ -70,6 +109,7 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     replace_fuzzywuzzy_match(df, "position", "Software Engineer", min_ratio=85)
 
     return df
+
 
 
 def replace_fuzzywuzzy_match(df: pd.DataFrame, column: str, query: str, min_ratio: int = 75):
@@ -112,8 +152,40 @@ def plot_bar(df: pd.DataFrame, rows: int, title=""):
     return fig
 
 
+# def plot_timeline(df: pd.DataFrame):
+#     """Generates a timeline plot of connections over time."""
+#     df = df["connected_on"].value_counts().reset_index()
+#     df.rename(columns={"index": "connected_on", "connected_on": "count"}, inplace=True)
+#     df = df.sort_values(by="connected_on", ascending=True)
+#     fig = px.line(df, x="connected_on", y="count")
+#     fig.update_layout(
+#         xaxis=dict(
+#             rangeselector=dict(
+#                 buttons=list([
+#                     dict(count=1, label="1m", step="month", stepmode="backward"),
+#                     dict(count=6, label="6m", step="month", stepmode="backward"),
+#                     dict(count=1, label="YTD", step="year", stepmode="todate"),
+#                     dict(count=1, label="1y", step="year", stepmode="backward"),
+#                     dict(step="all"),
+#                 ]),
+#                 bgcolor="black",
+#             ),
+#             rangeslider=dict(visible=True),
+#             type="date",
+#         ),
+#         xaxis_title="Date",
+#     )
+#     return fig
+
 def plot_timeline(df: pd.DataFrame):
     """Generates a timeline plot of connections over time."""
+    # Debug: Check column names in the DataFrame
+    if "connected_on" not in df.columns:
+        raise ValueError(f"Column 'connected_on' not found in DataFrame. Available columns: {df.columns.tolist()}")
+
+    # Debug: Print head of DataFrame to verify parsing
+    st.write("Debug: Head of DataFrame", df.head())
+
     df = df["connected_on"].value_counts().reset_index()
     df.rename(columns={"index": "connected_on", "connected_on": "count"}, inplace=True)
     df = df.sort_values(by="connected_on", ascending=True)
@@ -136,6 +208,7 @@ def plot_timeline(df: pd.DataFrame):
         xaxis_title="Date",
     )
     return fig
+
 
 
 def plot_wordcloud(chats: pd.DataFrame):
