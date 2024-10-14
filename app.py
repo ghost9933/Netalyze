@@ -31,6 +31,15 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# Helper function to find the header row dynamically
+def find_header_row(file_path, header_keywords):
+    """Finds the header row in the CSV file by searching for specific keywords."""
+    with open(file_path, 'r', encoding='utf-8') as f:
+        for i, line in enumerate(f):
+            if all(keyword.lower() in line.lower() for keyword in header_keywords):
+                return i
+    return -1
+
 # Helper functions
 def get_data(usr_file, data="connections") -> pd.DataFrame:
     """Extracts CSV data from a zip file."""
@@ -47,8 +56,10 @@ def get_data(usr_file, data="connections") -> pd.DataFrame:
 
         if data == "connections":
             file_path = os.path.join(tmpdirname, "Connections.csv")
+            header_keywords = ["First Name", "Last Name", "Company", "Position", "Connected On"]
         elif data == "messages":
             file_path = os.path.join(tmpdirname, "messages.csv")
+            header_keywords = ["Conversation ID", "Conversation Title", "From", "Subject", "Content"]
         else:
             st.error("Invalid data type specified.")
             return None
@@ -58,7 +69,14 @@ def get_data(usr_file, data="connections") -> pd.DataFrame:
             return None
 
         try:
-            df = pd.read_csv(file_path, skiprows=3) if data == "connections" else pd.read_csv(file_path)
+            header_row = find_header_row(file_path, header_keywords)
+            if header_row == -1:
+                st.error(f"Header row not found in {os.path.basename(file_path)}.")
+                return None
+
+            # Read the CSV from the header row
+            df = pd.read_csv(file_path, skiprows=header_row)
+            st.write(f"Successfully loaded `{os.path.basename(file_path)}` with columns: {list(df.columns)}")
             return df
         except Exception as e:
             st.error(f"Error reading CSV file: {e}")
@@ -69,8 +87,10 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     """Cleans the dataframe containing LinkedIn connections data."""
     required_columns = ["first_name", "last_name", "email_address", "company", "position", "connected_on"]
     missing_columns = [col for col in required_columns if col not in df.columns]
+
     if missing_columns:
         st.error(f"Missing columns in data: {', '.join(missing_columns)}")
+        st.write(f"Available columns: {list(df.columns)}")
         return pd.DataFrame()
 
     if privacy:
@@ -91,7 +111,7 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     df['company'] = df['company'].astype(str).str[:35]
 
     # Convert 'connected_on' to datetime
-    df['connected_on'] = pd.to_datetime(df['connected_on'], errors='coerce')
+    df['connected_on'] = pd.to_datetime(df['connected_on'], dayfirst=True, errors='coerce')
     df = df.dropna(subset=["connected_on"])
 
     # Filter out unwanted companies
@@ -101,6 +121,7 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     replace_fuzzywuzzy_match(df, "position", "Data Scientist")
     replace_fuzzywuzzy_match(df, "position", "Software Engineer", min_ratio=85)
 
+    st.write(f"Cleaned data has {len(df)} records after processing.")
     return df
 
 
@@ -115,14 +136,14 @@ def replace_fuzzywuzzy_match(df: pd.DataFrame, column: str, query: str, min_rati
 
 def agg_sum(df: pd.DataFrame, name: str) -> pd.DataFrame:
     """Aggregates value counts for companies and positions."""
-    df = df[name].value_counts().reset_index()
-    df.columns = [name, "count"]
-    df = df.sort_values(by="count", ascending=False)
-    return df
+    agg_df = df[name].value_counts().reset_index()
+    agg_df.columns = [name, "count"]
+    agg_df = agg_df.sort_values(by="count", ascending=False)
+    return agg_df
 
 
 def plot_bar(df: pd.DataFrame, rows: int, title=""):
-    """Creates a bar plot for the top N entries in the dataframe."""
+    """Creates a horizontal bar plot for the top N entries in the dataframe."""
     fig = px.bar(
         df.head(rows),
         x='count',
@@ -178,13 +199,14 @@ def plot_timeline(df: pd.DataFrame):
 
 def plot_wordcloud(chats: pd.DataFrame):
     """Generates a word cloud from chat messages."""
-    if "SUBJECT" not in chats.columns or "CONTENT" not in chats.columns:
+    required_columns = ["subject", "content"]
+    if not all(col in chats.columns for col in required_columns):
         st.warning("Messages data does not contain required columns for word cloud.")
         return None
 
-    chats_nospam = chats[chats["SUBJECT"].isnull()]
-    chats_nospam_nohtml = chats_nospam[~chats_nospam["CONTENT"].str.contains("<|>", na=False)]
-    messages = chats_nospam_nohtml.dropna(subset=["CONTENT"])["CONTENT"].astype(str).values
+    chats_nospam = chats[chats["subject"].isnull()]
+    chats_nospam_nohtml = chats_nospam[~chats_nospam["content"].str.contains("<|>", na=False)]
+    messages = chats_nospam_nohtml.dropna(subset=["content"])["content"].astype(str).values
     corpus = []
 
     for message in messages:
@@ -250,21 +272,29 @@ def plot_sankey(df: pd.DataFrame):
     """Generates a Sankey diagram showing flow between companies and positions."""
     sankey_df = df.groupby(['company', 'position']).size().reset_index(name='count')
 
+    # Create list of unique labels
+    companies = sankey_df['company'].unique().tolist()
+    positions = sankey_df['position'].unique().tolist()
+    labels = companies + positions
+
+    # Create mapping for sources and targets
+    source_indices = sankey_df['company'].apply(lambda x: labels.index(x)).tolist()
+    target_indices = sankey_df['position'].apply(lambda x: labels.index(x)).tolist()
+
     fig = px.sankey(
-        sankey_df,
         node=dict(
             pad=15,
             thickness=20,
             line=dict(color="black", width=0.5),
-            label=list(sankey_df['company'].unique()) + list(sankey_df['position'].unique()),
+            label=labels,
+            color=["blue"]*len(companies) + ["green"]*len(positions)
         ),
         link=dict(
-            source=sankey_df['company'].astype(str).apply(lambda x: list(sankey_df['company'].unique()).tolist().index(x)),
-            target=sankey_df['position'].astype(str).apply(lambda x: len(sankey_df['company'].unique()) + list(sankey_df['position'].unique()).tolist().index(x)),
+            source=source_indices,
+            target=target_indices,
             value=sankey_df['count']
         ),
         title="Flow from Companies to Positions",
-        font=dict(size=10),
     )
     fig.update_layout(template="plotly_dark")
     return fig
@@ -272,14 +302,15 @@ def plot_sankey(df: pd.DataFrame):
 
 def add_bg_from_local(image_file):
     """Adds a background image to the Streamlit app."""
-    with open(image_file, "rb") as image_file:
-        encoded_string = base64.b64encode(image_file.read())
+    with open(image_file, "rb") as img_file:
+        encoded_string = base64.b64encode(img_file.read()).decode()
     st.markdown(
         f"""
     <style>
     .stApp {{
-        background-image: url(data:image/{"png"};base64,{encoded_string.decode()});
-        background-size: cover
+        background-image: url(data:image/png;base64,{encoded_string});
+        background-size: cover;
+        background-position: center;
     }}
     </style>
     """,
@@ -310,7 +341,7 @@ def main():
         df_connections = get_data(usr_file, data="connections")
         df_messages = get_data(usr_file, data="messages")
 
-        if df_connections.empty:
+        if df_connections is None or df_connections.empty:
             st.error("Connections data is empty or invalid.")
             return
 
@@ -336,7 +367,8 @@ def main():
         # Display metrics
         col1, col2 = st.columns(2)
         col1.metric("Total Connections", total_conn)
-        col2.metric("Top Companies", agg_df_company['company'].iloc[0])
+        if not agg_df_company.empty:
+            col2.metric("Top Company", f"{agg_df_company['company'].iloc[0]} ({agg_df_company['count'].iloc[0]})")
 
         # Sidebar filters
         st.sidebar.header("Filters")
@@ -346,11 +378,18 @@ def main():
         st.subheader("📊 Top Companies & Positions")
         bar_col1, bar_col2 = st.columns(2)
         with bar_col1:
-            company_plt = plot_bar(agg_df_company, top_n, title="Top Companies")
-            st.plotly_chart(company_plt, use_container_width=True)
+            if not agg_df_company.empty:
+                company_plt = plot_bar(agg_df_company, top_n, title="Top Companies")
+                st.plotly_chart(company_plt, use_container_width=True)
+            else:
+                st.write("No company data available.")
+
         with bar_col2:
-            position_plt = plot_bar(agg_df_position, top_n, title="Top Positions")
-            st.plotly_chart(position_plt, use_container_width=True)
+            if not agg_df_position.empty:
+                position_plt = plot_bar(agg_df_position, top_n, title="Top Positions")
+                st.plotly_chart(position_plt, use_container_width=True)
+            else:
+                st.write("No position data available.")
 
         st.subheader("⏰ Timeline of Connections")
         timeline_fig = plot_timeline(df_clean)
