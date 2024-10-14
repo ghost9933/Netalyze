@@ -4,7 +4,7 @@ import streamlit as st
 import pandas as pd
 from zipfile import ZipFile
 import shutil
-from rapidfuzz import process
+from rapidfuzz import process, fuzz
 import plotly.express as px
 import matplotlib.pyplot as plt
 import networkx as nx
@@ -72,7 +72,7 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
 def replace_fuzzy_match(df: pd.DataFrame, column: str, query: str, min_ratio: int = 75):
     """Replaces fuzzy matches in the specified column with the query string."""
     pos_names = df[column].unique()
-    matches = process.extract(query, pos_names, scorer=process.fuzz.ratio, limit=500)
+    matches = process.extract(query, pos_names, scorer=fuzz.ratio, limit=500)
     matching_pos_name = [match[0] for match in matches if match[1] >= min_ratio]
     matches_rows = df[column].isin(matching_pos_name)
     df.loc[matches_rows, column] = query
