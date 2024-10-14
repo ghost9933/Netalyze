@@ -57,7 +57,10 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     df['company'] = df['company'].str[:35]
 
     # Convert 'connected_on' to datetime
-    df['connected_on'] = pd.to_datetime(df['connected_on'])
+    # df['connected_on'] = pd.to_datetime(df['connected_on'])
+    # Modify this line in `clean_df()` function:
+    df['connected_on'] = pd.to_datetime(df['connected_on'], format='%d-%b-%y', errors='coerce')
+
 
     # Filter out unwanted companies
     df = df[~df['company'].str.contains(r"[Ff]reelance|[Ss]elf-[Ee]mployed|\.|\-", regex=True)]
