@@ -85,6 +85,10 @@ def get_data(usr_file, data="connections") -> pd.DataFrame:
 
 def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     """Cleans the dataframe containing LinkedIn connections data."""
+    # Clean column names first
+    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
+
+    # Define required columns
     required_columns = ["first_name", "last_name", "email_address", "company", "position", "connected_on"]
     missing_columns = [col for col in required_columns if col not in df.columns]
 
@@ -95,9 +99,6 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
 
     if privacy:
         df = df.drop(columns=["first_name", "last_name", "email_address"], errors='ignore')
-
-    # Clean column names
-    df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
 
     # Drop missing values in company and position
     df = df.dropna(subset=["company", "position"])
@@ -205,7 +206,7 @@ def plot_wordcloud(chats: pd.DataFrame):
         return None
 
     chats_nospam = chats[chats["subject"].isnull()]
-    chats_nospam_nohtml = chats_nospam[~chats_nospam["content"].str.contains("<|>", na=False)]
+    chats_nospam_nohtml = chats_nospam[~chats["content"].str.contains("<|>", na=False)]
     messages = chats_nospam_nohtml.dropna(subset=["content"])["content"].astype(str).values
     corpus = []
 
