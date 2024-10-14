@@ -6,9 +6,7 @@ from zipfile import ZipFile
 import shutil
 from thefuzz import process
 import plotly.express as px
-import networkx as nx
-from pyvis.network import Network
-from wordcloud import WordCloud, STOPWORDS, ImageColorGenerator
+from wordcloud import WordCloud, STOPWORDS
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
@@ -37,39 +35,6 @@ def get_data(usr_file, data="connections") -> pd.DataFrame:
 
     return raw_df
 
-
-# def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
-#     """Cleans the dataframe containing LinkedIn connections data."""
-#     if privacy:
-#         df.drop(columns=["first_name", "last_name", "email_address"], inplace=True)
-
-#     # Clean column names
-#     df.columns = df.columns.str.strip().str.lower().str.replace(' ', '_')
-
-#     # Drop missing values in company and position
-#     df.dropna(subset=["company", "position"], inplace=True)
-
-#     # Combine first name and last name
-#     df['name'] = df['first_name'] + ' ' + df['last_name']
-#     df.drop(columns=["first_name", "last_name"], inplace=True)
-
-#     # Truncate company names
-#     df['company'] = df['company'].str[:35]
-
-#     # Convert 'connected_on' to datetime
-#     # df['connected_on'] = pd.to_datetime(df['connected_on'])
-#     # Modify this line in `clean_df()` function:
-#     df['connected_on'] = pd.to_datetime(df['connected_on'], format='%d-%b-%y', errors='coerce')
-
-
-#     # Filter out unwanted companies
-#     df = df[~df['company'].str.contains(r"[Ff]reelance|[Ss]elf-[Ee]mployed|\.|\-", regex=True)]
-
-#     # Fuzzy match for positions
-#     replace_fuzzywuzzy_match(df, "position", "Data Scientist")
-#     replace_fuzzywuzzy_match(df, "position", "Software Engineer", min_ratio=85)
-
-#     return df
 
 def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     """Cleans the dataframe containing LinkedIn connections data."""
@@ -109,7 +74,6 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     replace_fuzzywuzzy_match(df, "position", "Software Engineer", min_ratio=85)
 
     return df
-
 
 
 def replace_fuzzywuzzy_match(df: pd.DataFrame, column: str, query: str, min_ratio: int = 75):
@@ -152,31 +116,6 @@ def plot_bar(df: pd.DataFrame, rows: int, title=""):
     return fig
 
 
-# def plot_timeline(df: pd.DataFrame):
-#     """Generates a timeline plot of connections over time."""
-#     df = df["connected_on"].value_counts().reset_index()
-#     df.rename(columns={"index": "connected_on", "connected_on": "count"}, inplace=True)
-#     df = df.sort_values(by="connected_on", ascending=True)
-#     fig = px.line(df, x="connected_on", y="count")
-#     fig.update_layout(
-#         xaxis=dict(
-#             rangeselector=dict(
-#                 buttons=list([
-#                     dict(count=1, label="1m", step="month", stepmode="backward"),
-#                     dict(count=6, label="6m", step="month", stepmode="backward"),
-#                     dict(count=1, label="YTD", step="year", stepmode="todate"),
-#                     dict(count=1, label="1y", step="year", stepmode="backward"),
-#                     dict(step="all"),
-#                 ]),
-#                 bgcolor="black",
-#             ),
-#             rangeslider=dict(visible=True),
-#             type="date",
-#         ),
-#         xaxis_title="Date",
-#     )
-#     return fig
-
 def plot_timeline(df: pd.DataFrame):
     """Generates a timeline plot of connections over time."""
     # Debug: Check column names in the DataFrame
@@ -208,7 +147,6 @@ def plot_timeline(df: pd.DataFrame):
         xaxis_title="Date",
     )
     return fig
-
 
 
 def plot_wordcloud(chats: pd.DataFrame):
@@ -244,7 +182,7 @@ def plot_wordcloud(chats: pd.DataFrame):
 
 def main():
     """Main function to run the Streamlit app."""
-    st.set_page_config(page_title="Linkedin Network Visualizer", page_icon="🕸️", layout="wide")
+    st.set_page_config(page_title="Linkedin Network Visualizer", page_icon="🛨️", layout="wide")
     
     st.markdown(
         """
