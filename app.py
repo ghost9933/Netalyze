@@ -50,49 +50,62 @@ def clean_df(df: pd.DataFrame, privacy: bool = False) -> pd.DataFrame:
     df.dropna(subset=["company", "position"], inplace=True)
 
     # Combine first name and last name
-    df['name'] = df['first_name'] + ' ' + df['last_name']
-    df.drop(columns=["first_name", "last_name"], inplace=True)
+    if 'first_name' in df.columns and 'last_name' in df.columns:
+        df['name'] = df['first_name'] + ' ' + df['last_name']
+        df.drop(columns=["first_name", "last_name"], inplace=True)
 
     # Truncate company names
-    df['company'] = df['company'].str[:35]
+    if 'company' in df.columns:
+        df['company'] = df['company'].str[:35]
 
-    # Convert 'connected_on' to datetime
-    df['connected_on'] = pd.to_datetime(df['connected_on'])
+    # Convert 'connected_on' to datetime if column exists
+    if 'connected_on' in df.columns:
+        df['connected_on'] = pd.to_datetime(df['connected_on'], errors='coerce')
+        df.dropna(subset=['connected_on'], inplace=True)
 
     # Filter out unwanted companies
-    df = df[~df['company'].str.contains(r"[Ff]reelance|[Ss]elf-[Ee]mployed|\\.|-", regex=True)]
+    if 'company' in df.columns:
+        df = df[~df['company'].str.contains(r"[Ff]reelance|[Ss]elf-[Ee]mployed|\\.|-", regex=True)]
 
     # Fuzzy match for positions
-    replace_fuzzy_match(df, "position", "Data Scientist")
-    replace_fuzzy_match(df, "position", "Software Engineer", min_ratio=85)
+    if 'position' in df.columns:
+        replace_fuzzy_match(df, "position", "Data Scientist")
+        replace_fuzzy_match(df, "position", "Software Engineer", min_ratio=85)
 
     return df
 
 
 def replace_fuzzy_match(df: pd.DataFrame, column: str, query: str, min_ratio: int = 75):
     """Replaces fuzzy matches in the specified column with the query string."""
-    pos_names = df[column].unique()
-    matches = process.extract(query, pos_names, scorer=fuzz.ratio, limit=500)
-    matching_pos_name = [match[0] for match in matches if match[1] >= min_ratio]
-    matches_rows = df[column].isin(matching_pos_name)
-    df.loc[matches_rows, column] = query
+    if column in df.columns:
+        pos_names = df[column].unique()
+        matches = process.extract(query, pos_names, scorer=fuzz.ratio, limit=500)
+        matching_pos_name = [match[0] for match in matches if match[1] >= min_ratio]
+        matches_rows = df[column].isin(matching_pos_name)
+        df.loc[matches_rows, column] = query
 
 
 def agg_sum(df: pd.DataFrame, name: str) -> pd.DataFrame:
     """Aggregates value counts for companies and positions."""
-    df = df[name].value_counts().reset_index()
-    df.columns = [name, "count"]
-    df = df.sort_values(by="count", ascending=False)
-    return df
+    if name in df.columns:
+        df = df[name].value_counts().reset_index()
+        df.columns = [name, "count"]
+        df = df.sort_values(by="count", ascending=False)
+        return df
+    return pd.DataFrame(columns=[name, "count"])
 
 
 def plot_bar(df: pd.DataFrame, rows: int, title=""):
     """Creates a bar plot for the top N entries in the dataframe."""
+    if df.empty:
+        st.warning(f"No data available for {title}")
+        return None
+    
     height = 500 if rows <= 25 else 900
     fig = px.bar(
         df.head(rows),
         x='count',
-        y='company' if 'company' in df else 'position',
+        y='company' if 'company' in df.columns else 'position',
         template="plotly_dark",
         hover_data={df.columns[1]: False},
     )
@@ -111,6 +124,10 @@ def plot_bar(df: pd.DataFrame, rows: int, title=""):
 
 def plot_timeline(df: pd.DataFrame):
     """Generates a timeline plot of connections over time."""
+    if 'connected_on' not in df.columns:
+        st.warning("No 'connected_on' column found in the data.")
+        return None
+    
     df = df["connected_on"].value_counts().reset_index()
     df.rename(columns={"index": "connected_on", "connected_on": "count"}, inplace=True)
     df = df.sort_values(by="connected_on", ascending=True)
@@ -137,6 +154,10 @@ def plot_timeline(df: pd.DataFrame):
 
 def plot_wordcloud(chats: pd.DataFrame):
     """Generates a word cloud from chat messages."""
+    if 'subject' not in chats.columns or 'content' not in chats.columns:
+        st.warning("Required columns for wordcloud generation are missing.")
+        return None
+    
     chats_nospam = chats[chats['subject'].isnull()]
     chats_nospam_nohtml = chats_nospam[~chats_nospam['content'].str.contains("<|>")]
     messages = chats_nospam_nohtml.dropna(subset=["content"])['content'].values
@@ -208,17 +229,23 @@ def main():
     top_n = st.slider("Select Top N", 1, 50, 10)
     
     company_plt = plot_bar(agg_df_company, top_n, title="Top Companies")
-    position_plt = plot_bar(agg_df_position, top_n, title="Top Positions")
+    if company_plt:
+        st.plotly_chart(company_plt, use_container_width=True)
     
-    st.plotly_chart(company_plt, use_container_width=True)
-    st.plotly_chart(position_plt, use_container_width=True)
+    position_plt = plot_bar(agg_df_position, top_n, title="Top Positions")
+    if position_plt:
+        st.plotly_chart(position_plt, use_container_width=True)
 
     st.subheader("Timeline of Connections")
-    st.plotly_chart(plot_timeline(df_clean), use_container_width=True)
+    timeline_plt = plot_timeline(df_clean)
+    if timeline_plt:
+        st.plotly_chart(timeline_plt, use_container_width=True)
 
     st.subheader("Wordcloud of Chats")
     chats = get_data(usr_file, data="messages")
-    st.pyplot(plot_wordcloud(chats))
+    wordcloud_plt = plot_wordcloud(chats)
+    if wordcloud_plt:
+        st.pyplot(wordcloud_plt)
 
 
 if __name__ == "__main__":
