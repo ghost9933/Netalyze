@@ -7,6 +7,7 @@ from zipfile import ZipFile
 import shutil
 from thefuzz import process
 import plotly.express as px
+import plotly.graph_objects as go
 import networkx as nx
 from pyvis.network import Network
 from wordcloud import WordCloud, STOPWORDS
@@ -185,8 +186,11 @@ def clean_messages_df(df: pd.DataFrame) -> pd.DataFrame:
         st.write(f"🔍 Available columns in messages: {list(df.columns)}")
         return pd.DataFrame()
 
-    # Filter out spam messages or irrelevant content
-    df = df[df['folder'].str.lower() == 'inbox']
+    # Filter out spam messages or irrelevant content (e.g., folders other than 'Inbox')
+    if 'folder' in df.columns:
+        df = df[df['folder'].str.lower() == 'inbox']
+    else:
+        st.warning("⚠️ 'folder' column not found in messages data. Skipping folder-based filtering.")
 
     # Drop rows with missing content
     df.dropna(subset=["content"], inplace=True)
@@ -273,7 +277,7 @@ def plot_timeline(df: pd.DataFrame) -> px.line:
     timeline_df = df_time.value_counts().reset_index()
     timeline_df.columns = ["connected_on", "count"]
     timeline_df = timeline_df.sort_values(by="connected_on")
-
+    
     fig = px.line(
         timeline_df,
         x="connected_on",
@@ -333,11 +337,11 @@ def plot_wordcloud(df: pd.DataFrame) -> plt.Figure:
 
     combined_text = " ".join(corpus)
 
-    # Generate word cloud with mask
+    # Generate word cloud with mask if available
     try:
         linkedin_mask = np.array(Image.open("media/linkedin.png"))
     except FileNotFoundError:
-        st.warning("⚠️ Mask image for word cloud not found. Using default settings.")
+        st.warning("⚠️ Mask image `media/linkedin.png` not found. Using default settings for word cloud.")
         linkedin_mask = None
 
     wordcloud = WordCloud(
@@ -396,10 +400,10 @@ def plot_network_graph(df: pd.DataFrame) -> Network:
 
     return net
 
-# Helper function to plot Sankey diagram
-def plot_sankey(df: pd.DataFrame) -> px.sankey:
+# Helper function to plot Sankey diagram using plotly.graph_objects
+def plot_sankey_go(df: pd.DataFrame) -> go.Figure:
     """
-    Generates a Sankey diagram showing flow between companies and positions.
+    Generates a Sankey diagram showing flow between companies and positions using plotly.graph_objects.
     
     Parameters:
     - df (pd.DataFrame): Cleaned connections DataFrame.
@@ -408,16 +412,51 @@ def plot_sankey(df: pd.DataFrame) -> px.sankey:
     - plotly.graph_objects.Figure: Plotly Sankey diagram.
     """
     sankey_df = df.groupby(['company', 'position']).size().reset_index(name='count')
-
+    
     # Create list of unique labels
     companies = sankey_df['company'].unique().tolist()
     positions = sankey_df['position'].unique().tolist()
     labels = companies + positions
-
+    
     # Create mapping for sources and targets
     source_indices = sankey_df['company'].apply(lambda x: labels.index(x)).tolist()
     target_indices = sankey_df['position'].apply(lambda x: labels.index(x)).tolist()
+    
+    link = dict(source=source_indices, target=target_indices, value=sankey_df['count'])
+    node = dict(
+        pad=15,
+        thickness=20,
+        line=dict(color="black", width=0.5),
+        label=labels,
+        color=["blue"] * len(companies) + ["green"] * len(positions)
+    )
+    
+    fig = go.Figure(data=[go.Sankey(node=node, link=link)])
+    fig.update_layout(title_text="🔄 Flow from Companies to Positions", font_size=10, template="plotly_dark")
+    return fig
 
+# Updated plot_sankey function using plotly.express (Option A)
+def plot_sankey_express(df: pd.DataFrame) -> px.Figure:
+    """
+    Generates a Sankey diagram showing flow between companies and positions using plotly.express.
+    
+    Parameters:
+    - df (pd.DataFrame): Cleaned connections DataFrame.
+    
+    Returns:
+    - plotly.graph_objects.Figure: Plotly Sankey diagram.
+    """
+    sankey_df = df.groupby(['company', 'position']).size().reset_index(name='count')
+    
+    # Create list of unique labels
+    companies = sankey_df['company'].unique().tolist()
+    positions = sankey_df['position'].unique().tolist()
+    labels = companies + positions
+    
+    # Create mapping for sources and targets
+    source_indices = sankey_df['company'].apply(lambda x: labels.index(x)).tolist()
+    target_indices = sankey_df['position'].apply(lambda x: labels.index(x)).tolist()
+    
     fig = px.sankey(
         node=dict(
             pad=15,
@@ -569,23 +608,14 @@ def main():
 
         # Sankey Diagram: Companies to Positions
         st.subheader("🔄 Sankey Diagram: Companies to Positions")
-        fig_sankey = plot_sankey(df_clean)
-        st.plotly_chart(fig_sankey, use_container_width=True)
+        try:
+            fig_sankey = plot_sankey_express(df_clean)
+            st.plotly_chart(fig_sankey, use_container_width=True)
+        except AttributeError:
+            st.warning("⚠️ `plotly.express.sankey` is not available in your Plotly version. Using `plotly.graph_objects` instead.")
+            fig_sankey = plot_sankey_go(df_clean)
+            st.plotly_chart(fig_sankey, use_container_width=True)
 
-    else:
-        st.info("📥 Please upload a ZIP file containing your LinkedIn data to get started.")
-
-    # Footer
-    st.markdown(
-        """
-        <hr>
-        <p style='text-align: center; color: gray;'>
-            Developed with ❤️ using Streamlit
-        </p>
-        """,
-        unsafe_allow_html=True,
-    )
-
-# Run the app
-if __name__ == "__main__":
-    main()
+    # Run the app
+    if __name__ == "__main__":
+        main()
